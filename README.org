@@ -1,6 +1,7 @@
 #+title: Zima bar 🟦
 #+language: en
 #+begin_quote
+Zima Blue, the manufacturer called it. The first thing I ever saw. 
 This was where I began. A crude little machine with barely enough intelligence
 to steer itself. But it was my world.
 
