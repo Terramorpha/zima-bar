@@ -1,0 +1,35 @@
+#+title: Zima bar 🟦
+#+language: en
+#+begin_quote
+This was where I began. A crute little machine with barely enough intelligence
+to steer itself. But it was my world.
+
+--- Zima Blue
+#+end_quote
+
+I encountered the project https://github.com/elkowar/eww which aims to be an
+extremely customizable widget toolkit written in rust that uses GTK. As I tried
+to do basic stuff --- like read from the hyprland event socket --- I found the
+bespoke configuration language (some flavor of lisp) frustrating to use. As
+Greenspun's tenth rule (modified) goes: "Any sufficiently complicated r/unixporn
+software contains an ad hoc, informally-specified, bug-ridden, slow,
+unexpressive implementation of half of scheme". I went out and picked =g-golf=,
+the gobject bindings for guile scheme and implemented the following bar.
+
+However, after I had a complete implementation of what I wanted (it worked using
+the main thread for the gtk rendering in loop, plus a second thread watching the
+events and modifying the bar through ~g_idle_add~) , I found this two-threads hack
+unsatisfying.
+
+Guile scheme has two capabilities that make it very appropriate for a specific
+kind of programming trick shot:
+
+1. Delimited continuation.
+2. Optional suspendable IO.
+
+The first one lets the programmer suspend a computation and capture the stack
+(useful for implementing greenthreads) while the second one lets them retrofit
+the entire IO stack to play well with a foreign event loop, such as GLib.
+
+May this status bar metastasize into a complex mass of unjustifiable
+sophistication.
