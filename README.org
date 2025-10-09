@@ -1,7 +1,7 @@
 #+title: Zima bar 🟦
 #+language: en
 #+begin_quote
-This was where I began. A crute little machine with barely enough intelligence
+This was where I began. A crude little machine with barely enough intelligence
 to steer itself. But it was my world.
 
 --- Zima Blue
