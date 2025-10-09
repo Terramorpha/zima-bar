@@ -14,12 +14,12 @@ to do basic stuff --- like read from the hyprland event socket --- I found the
 bespoke configuration language (some flavor of lisp) frustrating to use. As
 Greenspun's tenth rule (modified) goes: "Any sufficiently complicated r/unixporn
 software contains an ad hoc, informally-specified, bug-ridden, slow,
-unexpressive implementation of half of scheme". I went out and picked =g-golf=,
-the gobject bindings for guile scheme and implemented the following bar.
+unexpressive implementation of half of scheme". The bar widget I made could very well have been a guile scheme program. I went and found =g-golf=,
+the gobject bindings for guile and implemented the status bar.
 
 However, after I had a complete implementation of what I wanted (it worked using
-the main thread for the gtk rendering in loop, plus a second thread watching the
-events and modifying the bar through ~g_idle_add~) , I found this two-threads hack
+the main thread for the gtk rendering loop, plus a second thread watching the
+events and modifying the bar through ~g_idle_add~ callbacks), I found this two-threads hack
 unsatisfying.
 
 Guile scheme has two capabilities that make it very appropriate for a specific
@@ -30,7 +30,6 @@ kind of programming trick shot:
 
 The first one lets the programmer suspend a computation and capture the stack
 (useful for implementing greenthreads) while the second one lets them retrofit
-the entire IO stack to play well with a foreign event loop, such as GLib.
+the entire IO system to support asynchronous IO in the style of event loops such as GLib or libuv. This is the trick I performed and you can now observe the results: a single threaded status bar made by gutting guile's direct style IO and stuffing GLib's event loop back in.
 
-May this status bar metastasize into a complex mass of unjustifiable
-sophistication.
+May this status bar, in honor of Zima Blue, metastasize into a complex mass of unjustifiable sophistication.
