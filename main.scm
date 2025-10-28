@@ -1,3 +1,6 @@
+#!/usr/bin/env -S guile
+!#
+
 (define-module (main)
   #:use-module (rnrs bytevectors)
   #:use-module (ice-9 threads)
@@ -102,11 +105,7 @@
   (nonblockify!
    (connect-to-unix-socket (hyprland-socket-path))))
 
-(define hyprland-socket-callbacks '())
-(define (hyprland-socket-add-callback! cb)
-  (set! hyprland-socket-callbacks
-    (cons cb
-          hyprland-socket-callbacks)))
+(define hyprland-socket-hook (make-hook 2))
 
 (define (hyprland-handle-events)
   (let ((line (read-line hyprland-port)))
@@ -114,12 +113,10 @@
       (let* ((parts (string-split line #\>))
              (type (string->symbol (car parts)))
              (rest (string-join (cddr parts) ">")))
-        (for-each
-         (lambda (cb)
-           (cb
-            type
-            rest))
-         hyprland-socket-callbacks))
+        (run-hook
+         hyprland-socket-hook
+         type
+         rest))
       (hyprland-handle-events))))
 
 (define glib-prompt-tag (make-prompt-tag))
@@ -168,12 +165,16 @@
             new-children))
 
 (define (hyprctl-get-workspace-states)
-  (call-with-port (open-input-pipe "hyprctl workspaces -j")
-           json->scm))
+  (let* ((pipe (open-input-pipe "hyprctl workspaces -j"))
+         (val (json->scm pipe)))
+    (close-pipe pipe)
+    val))
 
 (define (hyprctl-get-active-workspace)
-  (call-with-port (open-input-pipe "hyprctl activeworkspace -j")
-           json->scm))
+  (let* ((pipe (open-input-pipe "hyprctl activeworkspace -j"))
+         (val (json->scm pipe)))
+    (close-pipe pipe)
+    val))
 
 (define* (workspaces)
   (define box (make <gtk-box>
@@ -208,22 +209,15 @@
                              (assoc-ref b "id"))))))
       (map workspace-state->widget sorted)))
 
-  (define (callback type rest)
-    (match type
-      ('workspacev2
-       (let ((states (hyprctl-get-workspace-states))
-             (active (hyprctl-get-active-workspace)))
+  (add-hook! hyprland-socket-hook
+             (match-lambda*
+               (('workspacev2 rest)
+                (let ((states (hyprctl-get-workspace-states))
+                      (active (hyprctl-get-active-workspace)))
 
-         (set-box-children! box (make-children active states))
-         ;; (g-idle-add
-         ;;  (lambda ()
-         ;;    (set-box-children! box (make-children active states))
-         ;;    #f))
-         )
-       #f)
-      (_ #f)))
-  (hyprland-socket-add-callback!
-   callback)
+                  (set-box-children! box (make-children active states)))
+                #f)
+               (_ #f)))
   (set-box-children! box
                      (make-children
                       (hyprctl-get-active-workspace)
@@ -233,21 +227,53 @@
 
 (define* (window-name)
   (let ((label (make <gtk-label>)))
-    (hyprland-socket-add-callback!
+    (add-hook!
+     hyprland-socket-hook
      (lambda (type rest)
        (match type
          ('activewindow
           (match (string-split rest #\,)
             ((short long . long*)
-             (set-label label (string-join (cons long long*) ","))
-             ;; (g-idle-add
-             ;;  (lambda ()
-             ;;    (set-label label (string-join (cons long long*) ","))
-             ;;    #f))
-             )))
+             (set-label label (string-join (cons long long*) ",")))))
          (_ #f))))
     label))
 
+(define (get-volume)
+    (let* ((pipe (open-input-pipe "wpctl get-volume @DEFAULT_AUDIO_SINK@"))
+           (output (read-line pipe)))
+      (close-pipe pipe)
+
+      (if (eof-object? output)
+          #f
+          (let ((parts (string-split output #\space)))
+            (string->number (cadr parts))))))
+
+(define pactl-port
+  (nonblockify!
+   (open-input-pipe "pactl subscribe")))
+
+(define pactl-hook (make-hook 1))
+
+(define (pactl-handle-events)
+  (let* ((line (read-line pactl-port))
+         (parts (string-split line #\'))
+         (type (string->symbol (cadr parts))))
+    (unless (eof-object? line)
+      (run-hook pactl-hook type)
+      (pactl-handle-events))))
+
+(define* (volume)
+  (define volume-label
+    (make <gtk-label>
+      #:label (number->string (get-volume))))
+
+  (add-hook! pactl-hook
+             (match-lambda
+               ('change
+                (set-label volume-label (format #f "~,2f" (get-volume))))
+               (_ #f)))
+
+  volume-label)
 
 (define* (clock)
   (define (format-clock)
@@ -289,6 +315,7 @@
 
   (append center-box (window-name))
 
+  (append right-box (volume))
   (append right-box (clock))
 
 
@@ -356,6 +383,9 @@
 
              (with-glib-io
               hyprland-handle-events)
+
+             (with-glib-io
+              pactl-handle-events)
 
              ;; zero values returned
              (show window)
