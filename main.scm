@@ -5,10 +5,13 @@
   #:use-module (rnrs bytevectors)
   #:use-module (ice-9 threads)
   #:use-module (ice-9 suspendable-ports)
+  #:use-module (web client)
+  #:use-module (ice-9 binary-ports)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 match)
   #:use-module (ice-9 popen)
   #:use-module (json)
+  #:use-module (srfi srfi-41)
 
   #:use-module (oop goops)
   #:use-module (g-golf)
@@ -42,7 +45,15 @@
             "Label"
             "Button"
             "CssProvider"
-            "StyleContext"))
+            "StyleContext"
+            "Picture"
+            "GestureClick"
+            "GestureDrag"
+            "Popover"
+            "Scale"
+            "Calendar"
+            "ProgressBar"
+            "EventControllerMotion"))
 
 ;; Import Gdk classes
 (for-each (lambda (name)
@@ -84,6 +95,23 @@
                     -1)
     (gtk-style-context-add-provider-for-display display provider 600)))
 
+(define* (click-popover! #:key parent child)
+  (define popover
+    (make <gtk-popover>))
+
+  (set-parent popover parent)
+
+  (set-child popover child)
+
+  (define gesture
+    (make <gtk-gesture-click>
+      #:button 1))
+
+  (add-controller parent gesture)
+
+  (connect gesture 'pressed
+           (lambda _
+             (popup popover))))
 
 (define (nonblockify! port)
   (let ((flags (fcntl port F_GETFL)))
@@ -238,15 +266,6 @@
          (_ #f))))
     label))
 
-(define (get-volume)
-    (let* ((pipe (open-input-pipe "wpctl get-volume @DEFAULT_AUDIO_SINK@"))
-           (output (read-line pipe)))
-      (close-pipe pipe)
-
-      (if (eof-object? output)
-          #f
-          (let ((parts (string-split output #\space)))
-            (string->number (cadr parts))))))
 
 (define pactl-port
   (nonblockify!
@@ -262,30 +281,281 @@
       (run-hook pactl-hook type)
       (pactl-handle-events))))
 
+(define* (debounce f #:key (delay-ms 100))
+  (let ((pending-timeout #f)
+        (pending-args #f))
+    (lambda args
+      ;; Cancel any pending call
+      (when pending-timeout
+        (g-source-remove pending-timeout)
+        (set! pending-timeout #f))
+
+      ;; Store the arguments
+      (set! pending-args args)
+
+      ;; Schedule the actual call
+      (set! pending-timeout
+        (g-timeout-add delay-ms
+                       (lambda ()
+                         (apply f pending-args)
+                         (set! pending-timeout #f)
+                         #f))))))
+
+(define (set-volume vol)
+  (system* "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" (format #f "~,2f" vol)))
+
+(define (get-volume)
+    (let* ((pipe (open-input-pipe "wpctl get-volume @DEFAULT_AUDIO_SINK@"))
+           (output (read-line pipe)))
+      (close-pipe pipe)
+
+      (if (eof-object? output)
+          #f
+          (let ((parts (string-split output #\space)))
+            (string->number (cadr parts))))))
+
+(define volume-hook (make-hook 1))
+(add-hook! pactl-hook
+           (lambda (type)
+             (when (eq? type 'change)
+               (let ((volume (get-volume)))
+                 (run-hook volume-hook volume)))))
+
 (define* (volume)
+  (define init-volume (get-volume))
   (define volume-label
     (make <gtk-label>
-      #:label (number->string (get-volume))))
+      #:label (number->string init-volume)))
 
-  (add-hook! pactl-hook
-             (match-lambda
-               ('change
-                (set-label volume-label (format #f "~,2f" (get-volume))))
-               (_ #f)))
+
+  (define volume-slider
+    (make <gtk-scale>
+      #:orientation 'vertical
+      #:inverted #t
+      #:draw-value #f
+      #:height-request 200))
+
+  ;; Track whether user is currently dragging
+  (define user-dragging? #f)
+
+  ;; Create a gesture to detect drag state
+  (define drag-gesture
+    (make <gtk-gesture-drag>))
+
+  (define debounced-set-volume (debounce set-volume))
+
+  (add-controller volume-slider drag-gesture)
+
+  (connect drag-gesture 'drag-begin
+           (lambda (gesture x y)
+             (set! user-dragging? #t)))
+
+  (connect drag-gesture 'drag-end
+           (lambda (gesture x y)
+             (set! user-dragging? #f)))
+
+  (set-range volume-slider 0.0 1.0)
+  (set-value volume-slider init-volume)
+  ;; (set-increments volume-slider 0.01 0.1)
+
+  (connect volume-slider 'value-changed
+           (lambda (scale)
+             (debounced-set-volume (get-value scale))))
+
+  (click-popover!
+   #:parent volume-label
+   #:child volume-slider)
+
+  (add-hook! volume-hook
+             (lambda (volume)
+               (set-label volume-label (format #f "~,2f" volume))
+               (unless user-dragging?
+                (set-value volume-slider volume))))
 
   volume-label)
 
+(define (readonly-calendar)
+  (make <gtk-calendar>
+    #:can-target #f))
+
 (define* (clock)
-  (define (format-clock)
-    (strftime "%Y-%m-%d  %H:%M:%S" (localtime (current-time))))
-  (define clock-label
+  (define (format-date)
+    (strftime "%Y-%m-%d" (localtime (current-time))))
+  (define (format-time)
+    (strftime "%H:%M:%S" (localtime (current-time))))
+
+  (define time-label
     (make <gtk-label>
-      #:label (format-clock)))
+      #:label (format-time)))
+
+  (define date-label
+    (make <gtk-label>
+      #:label (format-date)))
+
+  (define clock-box
+    (make <gtk-box>
+      #:orientation 'horizontal
+      #:spacing 10))
+
+  (append clock-box date-label)
+  (append clock-box time-label)
+
+  (click-popover!
+   #:parent clock-box
+   #:child (readonly-calendar))
+
   (g-timeout-add 1000
                  (lambda ()
-                   (set-label clock-label (format-clock))
-                   #t))  ; Return #t to keep timer running
-  clock-label)
+                   (set-label time-label (format-time))
+                   #t))
+  (g-timeout-add (* 24 60 60 1000)
+                 (lambda ()
+                   (set-label date-label (format-date))
+                   #t))                 ; Return #t to keep timer running
+  clock-box)
+
+(define (playerctl command)
+  (system* "playerctl" command))
+
+(define playerctl-cmd
+  "playerctl metadata --follow --format '{\"status\":\"{{status}}\",\"artist\":\"{{artist}}\",\"title\":\"{{title}}\",\"album\":\"{{album}}\",\"position\":{{position}},\"length\":{{mpris:length}}, \"artUrl\":\"{{mpris:artUrl}}\"}'")
+
+(define playerctl-port
+  (nonblockify! (open-input-pipe
+                 playerctl-cmd)))
+
+(define playerctl-hook (make-hook 1))
+
+(define (playerctl-handle-events)
+  (let ((line (read-line playerctl-port)))
+    (if (string=? (string-trim-both line) "")
+        (playerctl-handle-events)
+        (let ((obj (json-string->scm line)))
+          (run-hook
+           playerctl-hook
+           obj)
+          (playerctl-handle-events)))))
+
+;; (add-hook! playerctl-hook
+;;            (lambda (obj) (format #t "playerctl: ~a\n" obj)))
+
+(define file-cache (make-hash-table))
+
+(define (download-file url path)
+  (system* "curl" "-o" path url))
+
+(define* (get-scale-image url #:key size)
+  (or (hash-ref file-cache url #f)
+      (let* ((t (current-time))
+             (path (string-append (getenv "HOME") "/.cache/zima-bar/" (number->string t))))
+        (unless (file-exists? (dirname path))
+          (mkdir (dirname path)))
+        (download-file url path)
+        (let* ((pixbuf (gdk-pixbuf-new-from-file-at-size path size size))
+               (texture (gdk-texture-new-for-pixbuf pixbuf)))
+          (hash-set! file-cache url texture)
+          texture))))
+
+(define* (player-card)
+  (define big-box (make <gtk-box>
+                    #:orientation 'vertical
+                    #:spacing 10))
+  (set-size-request big-box 200 -1)
+
+
+  (define album-art
+    (make <gtk-picture>
+      #:can-shrink? #f
+      #:content-fit 'scale-down))
+  (append big-box album-art)
+
+  (define media-label
+    (make <gtk-label>
+      #:label "No media playing"
+      #:ellipsize 'end
+      #:max-width-chars 20))
+  (append big-box media-label)
+
+  (define buttons-box
+    (make <gtk-box>
+      #:orientation 'horizontal
+      #:spacing 5
+      #:halign 'center
+      #:homogeneous #t))
+  (append big-box buttons-box)
+
+  (define prev-button (make <gtk-button> #:icon-name "media-skip-backward"))
+  (define play-pause-button (make <gtk-button> #:icon-name "media-playback-start"))
+
+  (define next-button (make <gtk-button> #:icon-name "media-skip-forward"))
+
+  (connect prev-button 'clicked
+           (lambda (button)
+             (playerctl "previous")))  ; or whatever your previous function is
+  (connect play-pause-button 'clicked
+           (lambda (button)
+             (playerctl "play-pause")))  ; or whatever your play-pause function is
+  (connect next-button 'clicked
+           (lambda (button)
+             (playerctl "next")))
+
+  (append buttons-box prev-button)
+  (append buttons-box play-pause-button)
+  (append buttons-box next-button)
+
+  (define progress (make <gtk-progress-bar>))
+  (append big-box progress)
+
+  (add-hook! playerctl-hook
+             (lambda (metadata)
+               (let ((artist (assoc-ref metadata "artist"))
+                     (title (assoc-ref metadata "title"))
+                     (art-url (assoc-ref metadata "artUrl"))
+                     (position (assoc-ref metadata "position"))
+                     (length (assoc-ref metadata "length"))
+                     (status (assoc-ref metadata "status")))
+                 ;; Update label
+                 (when (and artist title)
+                   (set-label media-label
+                              (format #f "~a - ~a"
+                                      (if (vector? artist)
+                                          (vector-ref artist 0)
+                                          artist)
+                                      title)))
+                 ;; Update album art
+                 (when art-url
+                   (let ((texture (get-scale-image art-url #:size 200)))
+                     (set-paintable album-art texture)))
+
+                 (when (and position length)
+                   (let ((song-progress (/ position length)))
+                     (set-fraction progress song-progress)))
+
+                 (match status
+                   ("Playing" (set-icon-name play-pause-button "media-playback-pause"))
+                   ("Paused" (set-icon-name play-pause-button "media-playback-start"))
+                   (_ #f))
+                 )))
+
+  big-box)
+
+(define* (player)
+  (define title-label
+    (make <gtk-label>))
+
+  (click-popover!
+   #:parent title-label
+   #:child (player-card))
+
+  (add-hook! playerctl-hook
+             (lambda (event)
+               (let ((title (assoc-ref event "title"))
+                     (artist (assoc-ref event "artist")))
+                 (if (and (string? title) (string? artist))
+                     (set-label title-label
+                                (format #f "~a - ~a" title artist))))))
+
+  title-label)
 
 (define* (bar-contents)
   (define main-box
@@ -313,7 +583,8 @@
 
   (append left-box (workspaces))
 
-  (append center-box (window-name))
+  ;; (append center-box (window-name))
+  (append center-box (player))
 
   (append right-box (volume))
   (append right-box (clock))
@@ -387,6 +658,9 @@
              (with-glib-io
               pactl-handle-events)
 
+             (with-glib-io
+              playerctl-handle-events)
+
              ;; zero values returned
              (show window)
              ;; ca a l'air que j'ai besoin de ça pour pas que ça crash
@@ -395,5 +669,3 @@
   (exit (run app (command-line))))
 
 (main)
-
-
